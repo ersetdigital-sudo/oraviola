@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07130f;
+  --color-panel: #0e211b;
+  --color-lime: #d6ff63;
+  --color-mint: #5be3b0;
+  --color-sky: #7fd4ff;
+  --color-amber: #ffd25c;
+  --color-pink: #ff8fd8;
+  --color-orange: #ffb35c;
+  --color-violet: #b9a8ff;
+  --color-danger: #ff8a8a;
+  --color-txt: #e9f3ee;
+  --color-mut: #8fa59c;
+
+  --font-sans: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-card: 22px;
+
+  --animate-marquee: marquee 28s linear infinite;
+
+  @keyframes marquee {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-txt);
+    font-family: var(--font-sans);
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  ::selection {
+    background: var(--color-lime);
+    color: var(--color-bg);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-lime);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Panel card used across the whole product */
+  .card {
+    background-color: var(--color-panel);
+    border: 1px solid color-mix(in srgb, var(--color-lime) 14%, transparent);
+    border-radius: var(--radius-card);
+  }
+
+  .hd {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  .glow {
+    background:
+      radial-gradient(600px 400px at 75% 20%, rgba(91, 227, 176, 0.22), transparent 70%),
+      radial-gradient(500px 360px at 10% 80%, rgba(214, 255, 99, 0.12), transparent 70%);
+  }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(214, 255, 99, 0.14) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(214, 255, 99, 0.14) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
