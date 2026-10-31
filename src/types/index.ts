@@ -30,6 +30,8 @@ export interface ProductItem {
   name: string;
   price: number;
   note?: string;
+  /** id produk di Supabase (diisi saat hidrasi) */
+  dbId?: string;
 }
 
 /** Satu field input pada form produk (dipakai katalog game). */
@@ -80,22 +82,8 @@ export interface ProductCatalog {
   detectOperator?: boolean;
   /** field form bawaan; tiap group bisa menimpanya */
   fields?: ProductField[];
-}
-
-export type PaymentKind = "qris" | "va" | "ewallet" | "retail";
-
-export interface PaymentMethod {
-  id: string;
-  name: string;
-  kind: PaymentKind;
-  desc: string;
-  /** biaya admin */
-  fee: number;
-  logo?: string;
-  /** prefix nomor virtual account */
-  vaPrefix?: string;
-  /** false = metode belum aktif (dimatikan sementara) */
-  enabled?: boolean;
+  /** id layanan di Supabase (diisi saat hidrasi) */
+  dbServiceId?: string;
 }
 
 export interface Operator {
@@ -105,19 +93,4 @@ export interface Operator {
   logo?: string;
   /** warna hex fallback bila logo tidak ada */
   color: string;
-}
-
-export interface Order {
-  id: string;
-  svc: string;
-  prod: string;
-  no: string;
-  met: string;
-  total: number;
-  /** menunggu = belum bayar, diproses = sudah bayar & lagi diproses, sukses = selesai */
-  status: "menunggu" | "diproses" | "sukses";
-  /** timestamp dibuat */
-  t: number;
-  /** timestamp dibayar */
-  paid?: number;
 }

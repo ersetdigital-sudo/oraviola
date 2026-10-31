@@ -3,10 +3,10 @@ export const SITE = {
   tagline: "Bayar & Isi Ulang Digital, Tenang dan Cepat",
   description:
     "Pulsa, paket data, token PLN, e-wallet, top up game, sampai BPJS & PDAM. Harga jujur, tanpa daftar, langsung masuk.",
-  url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://orraviola.id",
+  url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://oraviola.com",
   locale: "id_ID",
-  waNumber: "",
-  email: "",
+  waNumber: "6285711172317",
+  email: "halo@oraviola.com",
   address: "",
 } as const;
 

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { ProductView } from "@/components/product/ProductView";
-import { CATALOGS } from "@/data/products";
+import { getHydratedCatalog } from "@/lib/catalog-hydrate";
 import { SITE } from "@/data/site";
 
 type SearchParams = { no?: string; nominal?: string };
@@ -12,7 +12,7 @@ export type ProductPageProps = {
 
 /** Halaman produk generik (pulsa, pln, ewallet, game, tagihan). */
 export async function ProductPage({ catalogKey, searchParams }: ProductPageProps) {
-  const catalog = CATALOGS[catalogKey];
+  const { catalog, methods, brand } = await getHydratedCatalog(catalogKey);
   if (!catalog) notFound();
 
   const params = await searchParams;
@@ -42,6 +42,9 @@ export async function ProductPage({ catalogKey, searchParams }: ProductPageProps
     <>
       <ProductView
         catalog={catalog}
+        methods={methods}
+        brandSlug={brand?.slug ?? ""}
+        qrisImageUrl={brand?.qris_image_url ?? null}
         initialNumber={params.no ?? ""}
         initialNominal={params.nominal}
       />

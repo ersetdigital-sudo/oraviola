@@ -2,15 +2,28 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { BrandImage } from "@/components/BrandImage";
-import { PAYMENT_METHODS, PAYMENT_SECTIONS, QRIS_IMAGE } from "@/data/payments";
-import { createRetailCode, createVaNumber, formatVaNumber, rp } from "@/lib/format";
-import { saveOrder } from "@/lib/orders";
-import type { PaymentMethod } from "@/types";
+import { QRIS_IMAGE } from "@/data/payments";
+import { checkVoucher, createOrder, getPayment } from "@/lib/db/client";
+import { toPublicError } from "@/lib/db/errors";
+import { createVaNumber, formatVaNumber, rp } from "@/lib/format";
 
 type Step = "method" | "instruction" | "diproses" | "success";
+
+type CheckoutMethod = {
+  id: string;
+  name: string;
+  fee: number;
+  type: "qr" | "ewallet" | "va";
+};
+
+type AppliedVoucher = {
+  code: string;
+  potongan: number;
+  label: string;
+};
 
 type PaymentModalProps = {
   open: boolean;
@@ -19,42 +32,63 @@ type PaymentModalProps = {
   serviceTitle: string;
   /** label input, mis. "Nomor HP" */
   serviceLabel: string;
+  /** id layanan Supabase */
+  serviceId: string | null;
+  /** id produk Supabase */
+  productId: string | null;
   /** nama produk terpilih */
   productName: string;
   /** harga produk (tanpa admin) */
   productPrice: number;
   /** nomor tujuan */
   target: string;
-  /** id pesanan */
-  orderId: string;
+  /** data field tambahan (game, dll.) */
+  input: Record<string, string>;
+  brandSlug: string;
+  methods: CheckoutMethod[];
+  qrisImageUrl: string | null;
 };
 
-function Countdown({ seconds, onExpire }: { seconds: number; onExpire: () => void }) {
-  const [left, setLeft] = useState(seconds);
+const SECTIONS: { key: CheckoutMethod["type"]; label: string }[] = [
+  { key: "qr", label: "QRIS" },
+  { key: "va", label: "Transfer Virtual Account" },
+  { key: "ewallet", label: "E-Wallet" },
+];
+
+const METHOD_LOGOS: Record<string, string> = {
+  "BCA Virtual Account": "/images/payments/bca.svg",
+  "BRI Virtual Account": "/images/payments/bri.svg",
+  "BNI Virtual Account": "/images/payments/bni.svg",
+  "Mandiri Virtual Account": "/images/payments/mandiri.svg",
+  DANA: "/images/payments/dana.svg",
+  OVO: "/images/payments/ovo.svg",
+  GoPay: "/images/payments/gopay.png",
+  ShopeePay: "/images/payments/shopeepay.svg",
+};
+
+function property(value: number) {
+  return Math.max(0, value);
+}
+
+function Countdown({ expiresAt, onExpire }: { expiresAt: number; onExpire: () => void }) {
+  const [left, setLeft] = useState(() => Math.max(0, expiresAt - Date.now()));
 
   useEffect(() => {
-    setLeft(seconds);
-  }, [seconds]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setLeft((value) => {
-        if (value <= 1) {
-          window.clearInterval(timer);
-          onExpire();
-          return 0;
-        }
-        return value - 1;
-      });
-    }, 1000);
+    const tick = () => {
+      const next = Math.max(0, expiresAt - Date.now());
+      setLeft(next);
+      if (next <= 0) onExpire();
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [onExpire]);
+  }, [expiresAt, onExpire]);
 
   if (left <= 0) return <b className="text-danger">Kedaluwarsa</b>;
 
-  const hours = Math.floor(left / 3600);
-  const minutes = Math.floor((left % 3600) / 60);
-  const secs = left % 60;
+  const hours = Math.floor(left / 3600000);
+  const minutes = Math.floor((left % 3600000) / 60000);
+  const secs = Math.floor((left % 60000) / 1000);
   const text =
     (hours ? String(hours).padStart(2, "0") + ":" : "") +
     String(minutes).padStart(2, "0") +
@@ -69,21 +103,37 @@ export function PaymentModal({
   onClose,
   serviceTitle,
   serviceLabel,
+  serviceId,
+  productId,
   productName,
   productPrice,
   target,
-  orderId,
+  input,
+  brandSlug,
+  methods,
+  qrisImageUrl,
 }: PaymentModalProps) {
   const [step, setStep] = useState<Step>("method");
-  const [method, setMethod] = useState<PaymentMethod | null>(null);
+  const [method, setMethod] = useState<CheckoutMethod | null>(null);
+  const [invoice, setInvoice] = useState("");
+  const [orderTotal, setOrderTotal] = useState(0);
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [sn, setSn] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [expired, setExpired] = useState(false);
+  const [creatingId, setCreatingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [promoInput, setPromoInput] = useState("");
+  const [appliedVoucher, setAppliedVoucher] = useState<AppliedVoucher | null>(null);
+  const [promoError, setPromoError] = useState("");
+  const [applyingPromo, setApplyingPromo] = useState(false);
 
-  const total = useMemo(
-    () => productPrice + (method?.fee ?? 0),
-    [method, productPrice],
-  );
+  const discount = appliedVoucher?.potongan ?? 0;
+  const total = property(productPrice + (method?.fee ?? 0) - discount);
+  const displayTotal = invoice ? orderTotal : total;
+
+  const handleExpire = useCallback(() => setExpired(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -98,22 +148,58 @@ export function PaymentModal({
     };
   }, [open, onClose]);
 
-  // reset setiap kali modal dibuka
   useEffect(() => {
     if (open) {
       setStep("method");
       setMethod(null);
+      setInvoice("");
+      setOrderTotal(0);
+      setExpiresAt(0);
+      setSn(null);
       setCopied(null);
       setChecking(false);
       setExpired(false);
+      setCreatingId(null);
+      setError("");
+      setPromoInput("");
+      setAppliedVoucher(null);
+      setPromoError("");
+      setApplyingPromo(false);
     }
   }, [open]);
 
-  const vaNumber = method?.vaPrefix
-    ? formatVaNumber(createVaNumber(method.vaPrefix, target))
-    : "";
+  useEffect(() => {
+    if (step !== "diproses" || !invoice) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const payment = await getPayment(invoice);
+        if (payment.status === "sukses") {
+          setStep("success");
+          window.clearInterval(timer);
+          try {
+            const response = await fetch(`/api/orders/${encodeURIComponent(invoice)}`, {
+              headers: { accept: "application/json" },
+            });
+            if (response.ok) {
+              const data = (await response.json()) as { sn?: string | null };
+              setSn(data.sn ?? null);
+            }
+          } catch {
+            /* SN akan tampil di halaman cek transaksi */
+          }
+        } else if (payment.status === "dibatalkan") {
+          setStep("method");
+          setError("Transaksi dibatalkan. Silakan buat pesanan baru.");
+          window.clearInterval(timer);
+        }
+      } catch {
+        /* coba lagi di interval berikutnya */
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [step, invoice]);
 
-  const retailCode = useMemo(() => createRetailCode(), [step, method?.id]);
+  const vaNumber = method?.type === "va" ? formatVaNumber(createVaNumber("8000", target)) : "";
 
   const copy = async (value: string) => {
     try {
@@ -125,61 +211,87 @@ export function PaymentModal({
     }
   };
 
-  const choose = (item: PaymentMethod) => {
-    setMethod(item);
-    setStep("instruction");
-    setExpired(false);
-    saveOrder({
-      id: orderId,
-      svc: serviceTitle,
-      prod: productName,
-      no: target,
-      met: item.name,
-      total: productPrice + item.fee,
-      status: "menunggu",
-      t: Date.now(),
-    });
-  };
+  async function applyPromo() {
+    const code = promoInput.trim().toUpperCase();
+    setPromoError("");
+    if (!code) {
+      setPromoError("Masukkan kode promo terlebih dahulu.");
+      return;
+    }
+    if (!serviceId) {
+      setPromoError("Pembayaran belum tersedia. Coba lagi sebentar.");
+      return;
+    }
 
-  // User menekan "Saya sudah bayar": verifikasi dulu, lalu masuk tahap "diproses".
-  const checkStatus = () => {
+    setApplyingPromo(true);
+    try {
+      const result = await checkVoucher({
+        brandSlug,
+        code,
+        serviceId,
+        subtotal: productPrice,
+      });
+      if (!result.valid) {
+        setPromoError(result.pesan || "Kode promo tidak valid.");
+        return;
+      }
+      setAppliedVoucher({
+        code,
+        potongan: result.potongan,
+        label: `Potongan ${rp(result.potongan)}`,
+      });
+      setPromoInput(code);
+    } catch (promoFailure) {
+      setPromoError(toPublicError(promoFailure).message);
+    } finally {
+      setApplyingPromo(false);
+    }
+  }
+
+  function removePromo() {
+    setAppliedVoucher(null);
+    setPromoInput("");
+    setPromoError("");
+  }
+
+  async function choose(item: CheckoutMethod) {
+    if (!serviceId || !productId || !brandSlug) {
+      setError("Pembayaran belum tersedia. Coba lagi sebentar.");
+      return;
+    }
+
+    setError("");
+    setCreatingId(item.id);
+    try {
+      const created = await createOrder({
+        brandSlug,
+        serviceId,
+        productId,
+        nomorTujuan: target,
+        input: { ...input, nomor_tujuan: target },
+        paymentMethodId: item.id,
+        voucherCode: appliedVoucher?.code ?? null,
+      });
+      setMethod(item);
+      setInvoice(created.ref);
+      setOrderTotal(created.total);
+      setExpiresAt(new Date(created.expires_at).getTime());
+      setExpired(false);
+      setStep("instruction");
+    } catch (creationFailure) {
+      setError(toPublicError(creationFailure).message);
+    } finally {
+      setCreatingId(null);
+    }
+  }
+
+  function checkStatus() {
     setChecking(true);
     window.setTimeout(() => {
       setChecking(false);
       setStep("diproses");
-      saveOrder({
-        id: orderId,
-        svc: serviceTitle,
-        prod: productName,
-        no: target,
-        met: method?.name ?? "-",
-        total,
-        status: "diproses",
-        t: Date.now(),
-        paid: Date.now(),
-      });
-    }, 1200);
-  };
-
-  // Tahap "diproses" -&gt; selesai otomatis setelah jeda singkat.
-  useEffect(() => {
-    if (step !== "diproses") return;
-    const timer = window.setTimeout(() => {
-      setStep("success");
-      saveOrder({
-        id: orderId,
-        svc: serviceTitle,
-        prod: productName,
-        no: target,
-        met: method?.name ?? "-",
-        total,
-        status: "sukses",
-        t: Date.now(),
-        paid: Date.now(),
-      });
-    }, 6000);
-    return () => window.clearTimeout(timer);
-  }, [step, orderId, serviceTitle, productName, target, method?.name, total]);
+    }, 700);
+  }
 
   return (
     <AnimatePresence>
@@ -213,87 +325,134 @@ export function PaymentModal({
                   <Row label="Produk" value={productName} />
                   <Row label={serviceLabel} value={target} />
                   <Row label="Harga" value={rp(productPrice)} accent />
+                  {discount > 0 && (
+                    <Row label={`Promo ${appliedVoucher?.code ?? ""}`} value={`- ${rp(discount)}`} />
+                  )}
                 </div>
 
-                {PAYMENT_SECTIONS.map((section) => {
-                  const items = PAYMENT_METHODS.filter((m) => m.kind === section.key);
+                <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.02] p-3.5">
+                  <p className="text-xs font-bold text-mut">Kode promo</p>
+                  {appliedVoucher ? (
+                    <div className="mt-2 flex items-center justify-between gap-3 rounded-xl bg-lime/10 px-3 py-2">
+                      <span className="text-xs font-bold text-lime">
+                        {appliedVoucher.code} · {appliedVoucher.label}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={removePromo}
+                        className="cursor-pointer text-xs font-bold text-mut hover:text-txt"
+                      >
+                        Hapus
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mt-2 flex gap-2">
+                        <input
+                          value={promoInput}
+                          onChange={(event) => {
+                            setPromoInput(event.target.value.toUpperCase());
+                            if (promoError) setPromoError("");
+                          }}
+                          autoComplete="off"
+                          aria-label="Kode promo"
+                          placeholder="Contoh: ORAVIOLA10"
+                          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm uppercase outline-none transition focus:border-lime"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void applyPromo()}
+                          disabled={applyingPromo}
+                          className="shrink-0 cursor-pointer rounded-xl border border-lime/40 px-4 text-xs font-bold text-lime transition hover:bg-lime/10 disabled:opacity-50"
+                        >
+                          {applyingPromo ? "…" : "Pakai"}
+                        </button>
+                      </div>
+                      {promoError ? (
+                        <p className="mt-2 text-[11px] text-danger">{promoError}</p>
+                      ) : (
+                        <p className="mt-2 text-[11px] text-mut">
+                          ORAVIOLA10 berlaku untuk token PLN (maks. Rp10.000).
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {SECTIONS.map((section) => {
+                  const items = methods.filter((item) => item.type === section.key);
                   if (items.length === 0) return null;
 
                   return (
                     <div key={section.key}>
                       <p className="mt-4 mb-2 text-xs font-bold text-mut">{section.label}</p>
                       <div className="grid gap-1.5">
-                        {items.map((item) => {
-                          const active = item.enabled !== false;
-                          return (
-                            <button
-                              key={item.id}
-                              type="button"
-                              disabled={!active}
-                              onClick={() => choose(item)}
-                              aria-disabled={!active}
-                              className={`flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition ${
-                                active
-                                  ? "cursor-pointer border-lime/15 bg-white/[0.02] hover:border-lime/50"
-                                  : "cursor-not-allowed border-white/5 bg-white/[0.01] opacity-40"
-                              }`}
-                            >
-                              <MethodBadge method={item} />
-                              <span className="min-w-0 flex-1">
-                                <b className="block text-[15px]">{item.name}</b>
-                                <span className="text-xs text-mut">
-                                  {active ? item.desc : "Segera hadir"}
-                                </span>
+                        {items.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            disabled={Boolean(creatingId)}
+                            onClick={() => void choose(item)}
+                            className="flex w-full cursor-pointer items-center gap-3 rounded-2xl border border-lime/15 bg-white/[0.02] p-3 text-left transition hover:border-lime/50 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <MethodBadge method={item} />
+                            <span className="min-w-0 flex-1">
+                              <b className="block text-[15px]">{item.name}</b>
+                              <span className="text-xs text-mut">
+                                {creatingId === item.id
+                                  ? "Membuat pesanan…"
+                                  : item.type === "qr"
+                                    ? "Scan pakai semua e-wallet & m-banking"
+                                    : "Bayar lewat kanal resmi"}
                               </span>
-                              <span className="shrink-0 text-xs whitespace-nowrap text-mut">
-                                {active
-                                  ? item.fee
-                                    ? `+ ${rp(item.fee)}`
-                                    : "Gratis biaya"
-                                  : "Nonaktif"}
-                              </span>
-                            </button>
-                          );
-                        })}
+                            </span>
+                            <span className="shrink-0 text-xs whitespace-nowrap text-mut">
+                              {item.fee ? `+ ${rp(item.fee)}` : "Gratis biaya"}
+                            </span>
+                          </button>
+                        ))}
                       </div>
                     </div>
                   );
                 })}
+
+                {error ? (
+                  <p className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">
+                    {error}
+                  </p>
+                ) : null}
               </>
             )}
 
             {step === "instruction" && method && (
               <>
-                <ModalHead onClose={onClose} onBack={() => setStep("method")} />
+                <ModalHead onClose={onClose} />
 
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <MethodBadge method={method} />
                     <div>
                       <p className="text-xs tracking-[0.1em] text-mint uppercase">{method.name}</p>
-                      <p className="mt-0.5 text-xs text-mut">No. pesanan {orderId}</p>
+                      <p className="mt-0.5 text-xs text-mut">No. pesanan {invoice}</p>
                     </div>
                   </div>
                   <div className="text-right">
                     <p className="text-[11px] text-mut">Bayar sebelum</p>
-                    <Countdown
-                      seconds={method.kind === "qris" ? 900 : 86400}
-                      onExpire={() => setExpired(true)}
-                    />
+                    <Countdown key={invoice} expiresAt={expiresAt} onExpire={handleExpire} />
                   </div>
                 </div>
 
                 <div className="my-4 flex items-center justify-between rounded-2xl border border-lime/25 bg-lime/8 px-3.5 py-3">
                   <span className="text-sm text-mut">Total bayar</span>
-                  <b className="hd text-2xl text-lime">{rp(total)}</b>
+                  <b className="hd text-2xl text-lime">{rp(displayTotal)}</b>
                 </div>
 
-                {method.kind === "qris" && (
+                {method.type === "qr" && (
                   <div className="text-center">
                     <div className="inline-block overflow-hidden rounded-2xl bg-white p-2">
                       <Image
-                        src={QRIS_IMAGE}
-                        alt="QR Code Standar QRIS untuk pembayaran Oraviola"
+                        src={qrisImageUrl || QRIS_IMAGE}
+                        alt="Kode QRIS untuk pembayaran Oraviola"
                         width={1135}
                         height={1600}
                         priority
@@ -307,14 +466,14 @@ export function PaymentModal({
                   </div>
                 )}
 
-                {method.kind === "va" && (
+                {method.type === "va" && (
                   <div>
                     <p className="text-xs text-mut">Nomor Virtual Account</p>
                     <div className="mt-1.5 flex items-center justify-between gap-3 rounded-2xl bg-white/6 px-3.5 py-3.5">
                       <b className="hd text-xl tracking-[0.04em]">{vaNumber}</b>
                       <button
                         type="button"
-                        onClick={() => copy(vaNumber.replace(/\s/g, ""))}
+                        onClick={() => void copy(vaNumber.replace(/\s/g, ""))}
                         className="shrink-0 cursor-pointer text-xs font-bold text-lime"
                       >
                         {copied === vaNumber.replace(/\s/g, "") ? "Tersalin ✓" : "Salin"}
@@ -328,7 +487,7 @@ export function PaymentModal({
                   </div>
                 )}
 
-                {method.kind === "ewallet" && (
+                {method.type === "ewallet" && (
                   <div>
                     <p className="text-sm text-mut">
                       Kamu akan diarahkan ke aplikasi <b className="text-txt">{method.name}</b> untuk
@@ -347,25 +506,6 @@ export function PaymentModal({
                   </div>
                 )}
 
-                {method.kind === "retail" && (
-                  <div>
-                    <p className="text-xs text-mut">Kode pembayaran {method.name}</p>
-                    <div className="mt-1.5 flex items-center justify-between gap-3 rounded-2xl bg-white/6 px-3.5 py-3.5">
-                      <b className="hd text-xl tracking-[0.04em]">{retailCode}</b>
-                      <button
-                        type="button"
-                        onClick={() => copy(retailCode)}
-                        className="shrink-0 cursor-pointer text-xs font-bold text-lime"
-                      >
-                        {copied === retailCode ? "Tersalin ✓" : "Salin"}
-                      </button>
-                    </div>
-                    <p className="mt-3 text-xs text-mut">
-                      Tunjukkan kode ini ke kasir {method.name} dan bilang mau bayar “Oraviola”.
-                    </p>
-                  </div>
-                )}
-
                 <div className="mt-4 grid gap-1 text-xs text-mut">
                   <div className="flex justify-between gap-3">
                     <span>{productName}</span>
@@ -375,6 +515,12 @@ export function PaymentModal({
                     <span>Biaya layanan</span>
                     <span>{method.fee ? rp(method.fee) : "Gratis"}</span>
                   </div>
+                  {discount > 0 && (
+                    <div className="flex justify-between gap-3 text-lime">
+                      <span>Promo {appliedVoucher?.code ?? ""}</span>
+                      <span>- {rp(discount)}</span>
+                    </div>
+                  )}
                 </div>
 
                 {expired && (
@@ -382,6 +528,12 @@ export function PaymentModal({
                     Waktu pembayaran habis. Silakan mulai ulang.
                   </p>
                 )}
+
+                {error ? (
+                  <p className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">
+                    {error}
+                  </p>
+                ) : null}
 
                 <button
                   type="button"
@@ -396,7 +548,7 @@ export function PaymentModal({
 
             {step === "diproses" && (
               <>
-                <ModalHead label="PEMBAYARAN DITERIMA" onClose={onClose} />
+                <ModalHead label="MENUNGGU VERIFIKASI ADMIN" onClose={onClose} />
 
                 <div className="px-2 py-2 text-center">
                   <div className="mx-auto flex h-18 w-18 items-center justify-center rounded-full bg-lime/15">
@@ -408,24 +560,25 @@ export function PaymentModal({
                   </div>
                   <h3 className="hd mt-4 text-2xl font-extrabold">Terima kasih!</h3>
                   <p className="mt-1 text-sm text-mut">
-                    Pembayaranmu telah diterima dan akan segera diproses.
+                    Konfirmasi pembayaranmu sudah kami terima. Admin sedang memeriksa pembayaran
+                    sebelum pesanan diproses.
                   </p>
                 </div>
 
                 <div className="mt-5 grid gap-2 rounded-2xl bg-white/5 p-3.5 text-sm">
-                  <Row label="No. pesanan" value={orderId} />
+                  <Row label="No. pesanan" value={invoice} />
                   <Row label="Produk" value={productName} />
                   <Row label={serviceLabel} value={target || "-"} />
-                  <Row label="Total" value={rp(total)} accent />
+                  <Row label="Total" value={rp(displayTotal)} accent />
                 </div>
 
                 <p className="mt-4 rounded-2xl border border-lime/25 bg-lime/8 px-3.5 py-3 text-sm text-mut">
-                  Pesananmu sedang diproses di sisi kami. Mohon jangan tutup halaman ini,
-                  proses berjalan otomatis.
+                  Status akan berubah otomatis setelah admin menandai pembayaran. Kamu bisa
+                  memantau lewat halaman Cek Transaksi.
                 </p>
 
                 <Link
-                  href={`/cek?id=${orderId}`}
+                  href={`/cek?id=${encodeURIComponent(invoice)}`}
                   className="mt-4 block rounded-full border border-lime/40 py-3 text-center font-bold text-lime transition hover:bg-lime/10"
                 >
                   Lihat di Cek Transaksi
@@ -435,7 +588,7 @@ export function PaymentModal({
                   onClick={onClose}
                   className="mt-2 w-full cursor-pointer rounded-full bg-lime py-3.5 font-extrabold text-bg transition hover:brightness-95"
                 >
-                  Selesai
+                  Tutup
                 </button>
               </>
             )}
@@ -450,18 +603,19 @@ export function PaymentModal({
                   </div>
                   <h3 className="hd mt-4 text-2xl font-extrabold">Transaksi berhasil!</h3>
                   <p className="mt-1 text-sm text-mut">
-                    {productName} untuk {target} sudah diproses dan masuk ke akun kamu.
+                    {productName} untuk {target} sudah diproses.
                   </p>
                 </div>
 
                 <div className="mt-5 grid gap-2 rounded-2xl bg-white/5 p-3.5 text-sm">
-                  <Row label="No. pesanan" value={orderId} />
+                  <Row label="No. pesanan" value={invoice} />
                   <Row label="Metode" value={method?.name ?? "-"} />
-                  <Row label="Total" value={rp(total)} accent />
+                  <Row label="Total" value={rp(displayTotal)} accent />
+                  {sn ? <Row label="SN / Token" value={sn} accent /> : null}
                 </div>
 
                 <Link
-                  href={`/cek?id=${orderId}`}
+                  href={`/cek?id=${encodeURIComponent(invoice)}`}
                   className="mt-4 block rounded-full border border-lime/40 py-3 text-center font-bold text-lime transition hover:bg-lime/10"
                 >
                   Lihat di Cek Transaksi
@@ -525,16 +679,16 @@ function Row({ label, value, accent }: { label: string; value: string; accent?: 
   );
 }
 
-function MethodBadge({ method }: { method: PaymentMethod }) {
+function MethodBadge({ method }: { method: CheckoutMethod }) {
   return (
     <span className="relative flex h-11 w-[68px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-white px-2">
-      {method.kind === "qris" ? (
+      {method.type === "qr" ? (
         <span className="font-sans text-[15px] font-black tracking-[0.02em] text-black">
           QR<span className="text-[#E2231A]">IS</span>
         </span>
-      ) : method.logo ? (
+      ) : METHOD_LOGOS[method.name] ? (
         <BrandImage
-          src={method.logo}
+          src={METHOD_LOGOS[method.name]}
           alt={method.name}
           sizes="60px"
           className="object-contain"

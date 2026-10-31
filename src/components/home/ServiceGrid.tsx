@@ -5,23 +5,23 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Icon } from "@/components/Icons";
 import { Reveal } from "@/components/Reveal";
-import { SERVICES, SERVICE_FILTERS } from "@/data/services";
-import type { ServiceCategory } from "@/types";
+import { SERVICE_FILTERS } from "@/data/services";
+import type { Service, ServiceCategory } from "@/types";
 
 type FilterKey = "all" | ServiceCategory;
 
-export function ServiceGrid() {
+export function ServiceGrid({ services }: { services: Service[] }) {
   const [filter, setFilter] = useState<FilterKey>("all");
 
   const counts = useMemo(() => {
-    const map: Record<string, number> = { all: SERVICES.length };
-    for (const service of SERVICES) {
+    const map: Record<string, number> = { all: services.length };
+    for (const service of services) {
       map[service.category] = (map[service.category] ?? 0) + 1;
     }
     return map;
-  }, []);
+  }, [services]);
 
-  const visible = filter === "all" ? SERVICES : SERVICES.filter((s) => s.category === filter);
+  const visible = filter === "all" ? services : services.filter((s) => s.category === filter);
 
   return (
     <section id="layanan" className="mx-auto max-w-6xl scroll-mt-20 px-5 py-24">

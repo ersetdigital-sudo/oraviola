@@ -5,7 +5,7 @@ import { TransactionChecker } from "@/components/cek/TransactionChecker";
 export const metadata: Metadata = {
   title: "Cek Transaksi",
   description:
-    "Lacak status pembayaran dan pengiriman produk Oraviola memakai nomor pesanan. Riwayat tersimpan aman di perangkat kamu.",
+    "Lacak status pembayaran dan pengiriman produk Oraviola memakai nomor pesanan secara real-time.",
   alternates: { canonical: "/cek" },
   openGraph: {
     title: "Cek Transaksi | Oraviola",

@@ -29,8 +29,10 @@ src/
     fonts/                    DM Sans + Bricolage Grotesque (.ttf lokal)
     pulsa|pln|ewallet|game|tagihan/page.tsx
     bpjs/page.tsx, pdam/page.tsx  (tagihan dipisah per layanan)
-    cek/page.tsx              lacak transaksi (riwayat di localStorage)
-    pay/[id]/page.tsx         target QRIS / link pembayaran
+    cek/page.tsx              lacak transaksi dari Supabase
+    pay/[id]/page.tsx         redirect ke Cek Transaksi
+    api/orders/[invoice]/     status pesanan publik (server)
+    admin/                    dashboard admin per brand
     opengraph-image.tsx       OG image 1200x630 (dibuat runtime)
     sitemap.ts, robots.ts, icon.png
   components/
@@ -44,7 +46,9 @@ src/
     site.ts, services.ts, products.ts, payments.ts, operators.ts
   lib/
     format.ts                 format Rupiah, tanggal, nomor VA
-    orders.ts                 simpan/baca pesanan di localStorage
+    catalog-hydrate.ts        gabungkan katalog statis dengan harga DB
+    db/                       client/server Supabase + mapper RPC
+  modules/admin/              komponen, aksi, dan style dashboard admin
   types/index.ts
 legacy/                       HTML & asset asli (arsip, tidak dipakai build)
 ```
@@ -84,39 +88,31 @@ PLN, e-wallet, dsb) tetap memakai satu input biasa.
 | `/bpjs` | Iuran BPJS Kesehatan |
 | `/pdam` | Tagihan air PDAM |
 | `/tagihan` | Internet rumah & TV kabel |
-| `/cek` | Cek status transaksi + riwayat perangkat |
-| `/pay/[id]` | Halaman tujuan QRIS |
+| `/cek` | Cek status transaksi langsung dari Supabase |
+| `/pay/[id]` | Redirect ke `/cek?id=...` |
 
 ## Alur pembayaran
 
 1. Pilih produk → isi nomor tujuan (operator terdeteksi otomatis pada pulsa).
-2. `PaymentModal` menampilkan metode: **QRIS**, **Virtual Account** (BCA/BRI/BNI/Mandiri),
-   **E-Wallet** (DANA/OVO/GoPay/ShopeePay), dan **Gerai Retail** (Alfamart/Indomaret).
-   Saat ini **hanya QRIS yang aktif** — sisanya tampil redup dengan label "Segera hadir" /
-   "Nonaktif" dan tidak bisa diklik. Aktifkan dengan mengubah `enabled: false` → `true`
-   di `src/data/payments.ts`.
-3. QRIS memakai **QR Code Standar (static)** milik merchant:
-   `https://res.cloudinary.com/dqjh7utdb/image/upload/v1792161327/camhvfeu1lcm0ps8ieiz.jpg`
-   (di-load lewat `next/image`, host-nya didaftarkan di `images.remotePatterns`).
-4. Tombol **"Saya sudah bayar"** → verifikasi singkat ("Memverifikasi…") → layar
-   **"Terima kasih! Pembayaranmu telah diterima dan akan segera diproses"**
-   (spinner, status pesanan = `diproses`) → setelah jeda otomatis jadi
-   "Transaksi berhasil!" (status = `sukses`).
-5. Status tersimpan di `localStorage` (`orraviola_orders`) sehingga bisa dilacak di `/cek`.
-   Tiga status: `menunggu` (belum bayar), `diproses` (sudah bayar, lagi diproses),
-   `sukses` (selesai).
+2. `PaymentModal` menampilkan metode pembayaran yang aktif di database brand. Saat ini
+   **hanya QRIS** yang aktif; metode lain belum di-seed.
+3. Memilih metode akan membuat order di Supabase lewat `create_order`, lalu modal menampilkan
+   invoice `OVL-...`, total final, dan QRIS brand dari database.
+4. Kode promo divalidasi lewat `cek_voucher` (contoh `ORAVIOLA10` untuk token PLN).
+5. Tombol **"Saya sudah bayar"** menandai pesanan sedang diperiksa. Modal memantau status
+   Supabase; setelah admin menandai sukses dan mengisi SN, modal menampilkan
+   "Transaksi berhasil!" beserta SN/token.
+6. Status bisa dicek kapan saja di `/cek?id=<invoice>`; data diambil dari server, bukan
+   localStorage. Status: `menunggu`, `diproses`, `sukses`, `dibatalkan`.
 
 ## Yang masih perlu diisi manual
 
 | Letak | Isian |
 | --- | --- |
-| `src/data/site.ts` → `SITE.url` | URL produksi (default `https://orraviola.id`). Isi `NEXT_PUBLIC_SITE_URL` saat deploy. |
-| `src/data/site.ts` → `SITE.waNumber`, `SITE.email`, `SITE.address` | Belum ada di HTML asli — dipakai untuk data structured data. |
-| `src/data/payments.ts` → `QRIS_IMAGE` | URL QRIS static di Cloudinary — ganti kalo merchant code-nya diganti. |
-| `src/data/payments.ts` → `enabled` | Yang `false` = metode nonaktif. Saat ini cuma QRIS yang nyala. |
-| `src/app/pay/[id]/page.tsx` | Halaman detail pembayaran (belum dipakai QRIS static). |
-| `src/lib/orders.ts` | Penyimpanan masih di `localStorage`. Untuk produksi, ganti ke API/database. |
-| `src/data/products.ts` | Harga masih dummy — ganti dengan harga dari provider. |
+| Environment | Isi `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `BRAND_SLUG=oraviola`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_WHATSAPP`. Lihat `.env.example`. |
+| Admin | Login di `/admin` dengan akun yang dibuat saat seed (password ada di `.env.admin.local`, tidak di-commit). |
+| `src/data/payments.ts` → `QRIS_IMAGE` | Hanya fallback bila brand belum punya gambar QRIS di database. |
+| `src/data/products.ts` | Daftar produk & urutan tetap; harga jual diambil dari database saat halaman dirender. Ubah harga lewat `/admin/produk`. |
 
 ## Catatan
 

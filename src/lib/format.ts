@@ -19,16 +19,6 @@ export function formatDateTime(timestamp: number): string {
   });
 }
 
-/** Nomor pesanan singkat, contoh: ORV1234567 */
-export function createOrderId(): string {
-  return "ORV" + Date.now().toString().slice(-7);
-}
-
-/** Kode pembayaran gerai */
-export function createRetailCode(): string {
-  return "ORV" + Math.random().toString().slice(2, 12);
-}
-
 /** Nomor virtual account bank (dummy, 16 digit) */
 export function createVaNumber(prefix: string, target: string): string {
   const digits = target.replace(/\D/g, "").padStart(11, "0");

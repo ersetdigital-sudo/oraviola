@@ -7,6 +7,7 @@ import { Steps } from "@/components/home/Steps";
 import { Testimonials } from "@/components/home/Testimonials";
 import { FAQS } from "@/data/services";
 import { SITE } from "@/data/site";
+import { getHydratedServices } from "@/lib/catalog-hydrate";
 
 const faqLd = {
   "@context": "https://schema.org",
@@ -18,12 +19,14 @@ const faqLd = {
   })),
 };
 
-export default function HomePage() {
+export default async function HomePage() {
+  const services = await getHydratedServices();
+
   return (
     <>
       <Hero />
       <Marquee />
-      <ServiceGrid />
+      <ServiceGrid services={services} />
       <Steps />
       <Promo />
       <Testimonials />

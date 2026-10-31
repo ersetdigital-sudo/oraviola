@@ -5,13 +5,23 @@ import { AnimatePresence, motion } from "motion/react";
 import { BrandImage } from "@/components/BrandImage";
 import { PaymentModal } from "@/components/payment/PaymentModal";
 import { OPERATORS, detectOperator } from "@/data/operators";
-import { createOrderId, rp } from "@/lib/format";
+import { rp } from "@/lib/format";
 import type { ProductCatalog, ProductField, ProductItem } from "@/types";
 
 type Selection = { group: number; item: number };
 
+type CheckoutMethod = {
+  id: string;
+  name: string;
+  fee: number;
+  type: "qr" | "ewallet" | "va";
+};
+
 type ProductViewProps = {
   catalog: ProductCatalog;
+  methods: CheckoutMethod[];
+  brandSlug: string;
+  qrisImageUrl: string | null;
   /** nomor tujuan dari query string */
   initialNumber?: string;
   /** nominal terpilih dari query string */
@@ -68,7 +78,14 @@ function composeTarget(fields: ProductField[], values: Record<string, string>): 
   return parts.join(" ");
 }
 
-export function ProductView({ catalog, initialNumber = "", initialNominal }: ProductViewProps) {
+export function ProductView({
+  catalog,
+  methods,
+  brandSlug,
+  qrisImageUrl,
+  initialNumber = "",
+  initialNominal,
+}: ProductViewProps) {
   const [initialSelection] = useState(() =>
     initialNominal ? findByNominal(catalog, initialNominal) : null,
   );
@@ -78,7 +95,6 @@ export function ProductView({ catalog, initialNumber = "", initialNominal }: Pro
   const [selected, setSelected] = useState<Selection | null>(initialSelection);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
-  const [orderId, setOrderId] = useState(() => createOrderId());
 
   const activeGroupDef = catalog.groups[activeGroup];
   /** Katalog dengan `fields` per group (game) punya form sendiri per tab. */
@@ -152,9 +168,12 @@ export function ProductView({ catalog, initialNumber = "", initialNominal }: Pro
       return;
     }
     setError(null);
-    setOrderId(createOrderId());
     setModalOpen(true);
   };
+
+  const orderInput = isDynamic
+    ? { ...values, nomor_tujuan: target }
+    : { nomor_tujuan: number.trim() };
 
   return (
     <>
@@ -458,10 +477,15 @@ export function ProductView({ catalog, initialNumber = "", initialNominal }: Pro
         onClose={() => setModalOpen(false)}
         serviceTitle={catalog.title}
         serviceLabel={targetLabel}
+        serviceId={catalog.dbServiceId ?? null}
+        productId={selectedItem?.dbId ?? null}
         productName={selectedItem?.name ?? "-"}
         productPrice={selectedItem?.price ?? 0}
         target={target}
-        orderId={orderId}
+        input={orderInput}
+        brandSlug={brandSlug}
+        methods={methods}
+        qrisImageUrl={qrisImageUrl}
       />
     </>
   );
